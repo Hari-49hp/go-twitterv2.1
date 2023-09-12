@@ -1,17 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"html/template"
+	"io/ioutil"
 	"log"
-	"net/http"
 	"os"
-	"sort"
 
-	"github.com/gorilla/pat"
-	"github.com/markbates/goth"
-	"github.com/markbates/goth/gothic"
-	"github.com/markbates/goth/providers/twitter"
+	"github.com/dghubble/oauth1"
+	"github.com/gin-gonic/gin"
+	// "github.com/go-oauth2/oauth2/v4/manage"
 )
 
 type ProviderIndex struct {
@@ -20,57 +18,53 @@ type ProviderIndex struct {
 }
 
 func main() {
-	goth.UseProviders(
-		twitter.New(os.Getenv("CONSUMER_KEY"), os.Getenv("CONSUMER_SECRET"), os.Getenv("BASE_URL")+"/auth/twitter/callback"),
-		// twitter.NewAuthenticate(os.Getenv("TWITTER_KEY"), os.Getenv("TWITTER_SECRET"), "http://localhost:3000/auth/twitter/callback"),
-	)
 
-	m := make(map[string]string)
-	m["twitter"] = "Twitter"
+	router := gin.Default()
 
-	var keys []string
-	for k := range m {
-		keys = append(keys, k)
+	router.POST("/oauth2/token", Login)
+
+	port := "8068"
+	// log.Info().Msg("Starting server on :" + port)
+	router.Run(":" + port)
+
+}
+
+func Login(c *gin.Context) {
+
+	twitterToken := "1488730958270726144-E7EGFotCFgNTYpm8vrVelEnVUsQHHO"
+	twitterTokenSecret := "tP4mzrhOEp0ChPoZP38RVwAAWkHn5ZfDoqtypc322MwME"
+
+	config := oauth1.NewConfig(os.Getenv("TWITTER_CONSUMER_KEY"), os.Getenv("TWITTER_CONSUMER_SECRET_KEY"))
+	token := oauth1.NewToken(twitterToken, twitterTokenSecret)
+	
+	httpClient := config.Client(oauth1.NoContext, token)
+	type TwitterResponseStatus struct {
+		Place struct {
+			Country     string `json:"country"`
+			CountryCode string `json:"country_code"`
+		} `json:"place"`
 	}
-	sort.Strings(keys)
 
-	providerIndex := &ProviderIndex{
-		Providers:    keys,
-		ProvidersMap: m,
+	type TwitterResponse struct {
+		ID     int64                 `json:"id"`
+		Email  string                `json:"email"`
+		Name   string                `json:"name"`
+		Status TwitterResponseStatus `json:"status"`
 	}
 
-	p := pat.New()
-	p.Get("/auth/{provider}/callback", func(res http.ResponseWriter, req *http.Request) {
+	// example Twitter API request
+	path := "https://api.twitter.com/1.1/account/verify_credentials.json?include_email=true&skip_status=false"
+	resp, _ := httpClient.Get(path)
+	defer resp.Body.Close()
+	body, _ := ioutil.ReadAll(resp.Body)
 
-		user, err := gothic.CompleteUserAuth(res, req)
-		if err != nil {
-			fmt.Fprintln(res, err)
-			return
-		}
-		t, _ := template.ParseFiles("templates/success.html")
-		t.Execute(res, user)
-	})
+	fmt.Printf("Raw Response Body:\n%v\n", string(body))
 
-	p.Get("/logout/{provider}", func(res http.ResponseWriter, req *http.Request) {
-		gothic.Logout(res, req)
-		res.Header().Set("Location", "/")
-		res.WriteHeader(http.StatusTemporaryRedirect)
-	})
+	var user map[string]interface{}
+	if err := json.Unmarshal(body, &user); err != nil {
+		log.Fatalf("Failed to parse JSON response: %v", err)
+		return
+	}
 
-	p.Get("/auth/{provider}", func(res http.ResponseWriter, req *http.Request) {
-		// try to get the user without re-authenticating
-		if gothUser, err := gothic.CompleteUserAuth(res, req); err == nil {
-			t, _ := template.ParseFiles("templates/success.html")
-			t.Execute(res, gothUser)
-		} else {
-			gothic.BeginAuthHandler(res, req)
-		}
-	})
-
-	p.Get("/", func(res http.ResponseWriter, req *http.Request) {
-		t, _ := template.ParseFiles("templates/index.html")
-		t.Execute(res, providerIndex)
-	})
-	log.Println("listening on https://8fd3-103-99-148-171.ngrok-free.app")
-	log.Fatal(http.ListenAndServe(":8080", p))
+	c.JSON(200, user)
 }
